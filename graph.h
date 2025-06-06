@@ -3,7 +3,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-//#include <array>
+#include <string>
+
 #include <cstdint>
 #include <iostream>
 #include <stack>
@@ -12,6 +13,10 @@
 #include <algorithm>
 #include <iomanip>
 
+#ifdef NO_PLOT
+#else
+#include <graphviz/cgraph.h>
+#endif
 
 using node = uint32_t;
 
@@ -21,14 +26,39 @@ class CNet {
     
     public:
     CNet() {}
-    CNet(const std::vector<std::vector<node>>& neighbors) : Nodes(neighbors) {}
+    CNet(const std::vector<std::vector<node>>& net) : Nodes(net) {}
     CNet(const size_t N) {
         Nodes.resize(N);
+    }
+    std::vector<std::vector<node>> getNodes() const {
+        return Nodes;
     }
     // Reserve space for N nodes
     void reserve(const size_t N) {
         Nodes.reserve(N);
     }
+    size_t size(){
+        return Nodes.size();
+    }
+    // Adds a new node at the end with no neighbors
+    void add() {
+        Nodes.push_back({});
+    }
+    // Adds a new node at the end with the given neighbors
+    void add(const std::vector<node>& neighbors) {
+        Nodes.push_back(neighbors);
+    }
+    // Assign the neighbors of node i to be an empty vector
+    void assign(const node i) {
+        if (i >= Nodes.size()) return;
+        Nodes[i] = {};
+    }
+    // Assign the neighbors of node i to be the given vector
+    void assign(const node i, const std::vector<node>& neighbors) {
+        if (i >= Nodes.size()) return;
+        Nodes[i] = neighbors;
+    }
+    
     CNet operator+(const CNet& net) {
         std::vector<std::vector<node>> joined;
         joined.reserve(Nodes.size() + net.getNodes().size());
@@ -70,16 +100,14 @@ class CNet {
         }
         return *this;
     }
-    std::vector<std::vector<node>> getNodes() const {
-        return Nodes;
-    }
+    
     // Unlinks two nodes
-    void unlink(const node i, const node j) {
+    void inline unlink(const node i, const node j) {
         Nodes[i].erase(std::find(Nodes[i].begin(), Nodes[i].end(), j));
         Nodes[j].erase(std::find(Nodes[j].begin(), Nodes[j].end(), i));
     }
     // Links two nodes if they are not already linked
-    void link(node i, node j) {
+    void inline link(node i, node j) {
         if (i == j) return;
 
         if (Nodes[i].size()>Nodes[j].size()) std::swap(i, j);
@@ -105,7 +133,8 @@ class CNet {
             std::cout << std::endl;
         }
     }
-    // Returns a connected subgraph of the network
+    // Returns a connected subgraph of the network containing the nodes in the input vector
+    // (WARNING) All nodes must be connected, and the input vector must contain all nodes in the subgraph
     CNet connected_subgraph(const std::vector<node>& nodes) {
         std::vector<std::vector<node>> subgraph(nodes.size());
         std::unordered_map<node, node> node_to_index;
@@ -172,11 +201,11 @@ class CNet {
         return degree_dist;
     }
     // Prints the degree distribution of the network
-    void print_degree_distribution() {
+    void print_degree_distribution(const int width=2) {
         auto vec = degree_distribution();
         std::cout << "Degree distribution:\t";
         for (auto i : vec) {
-            std::cout << std::setw(2) << i << " ";
+            std::cout << std::setw(width) << i << " ";
         }
         std::cout << std::endl;
     }
@@ -217,6 +246,9 @@ class CNet {
     }
     // Creates a ring network, where each node has grade neighbors
     static CNet ring(const node N, const size_t grade=2) {
+        if (grade < 2 || grade >= N) {
+            throw std::domain_error("Grade must be between 2 and N-1");
+        }
         CNet ring(N);
         for (node i = 0; i < N; i++) {
             for (size_t j = 1; j <= grade/2; j++) {
@@ -261,11 +293,13 @@ class CNet {
         std::uniform_real_distribution<double> dist(0, 1);
         std::uniform_int_distribution<> dis(0, N - 3);
         
-        size_t num_rand;
+        node num_rand, rewire, left;
+        size_t warning_count;
         for (node i = 0; i < N; i++) {
-            for (size_t j = 1; j <= grade/2; j++) {
+            for (node j = 1; j <= grade/2; j++) {
                 if (dist(gen) < beta) {
-                    ring.unlink(i, (i+j)%N);
+                    left = (i+j)%N;
+                    ring.unlink(i, left);
                     num_rand = dis(gen);
                     if (num_rand >= i) num_rand++;
                     if (num_rand >= j) num_rand++;
@@ -275,6 +309,19 @@ class CNet {
                         if (num_rand >= j) num_rand++;
                     }
                     ring.link_no_check(i, num_rand);
+                    rewire = dist(gen)*ring.Nodes[num_rand].size();
+                    warning_count=0;
+                    while (std::find(ring.Nodes[rewire].begin(), ring.Nodes[rewire].end(), left) != ring.Nodes[rewire].end()) {
+                        rewire = dist(gen)*ring.Nodes[num_rand].size();
+                        warning_count++;
+                        if (warning_count > ring.Nodes[rewire].size()*10){
+                            std::cout << "Warning, infinite loop, exiting\n";
+                            break;
+                        }
+                    }
+                    ring.unlink(num_rand, rewire);
+                    ring.link_no_check(left, rewire);
+                    
                 }
             }
         }
@@ -318,6 +365,38 @@ class CNet {
             }
         }
         return net;
+    }
+
+    void plot() {
+        // Initialize Graphviz
+        Agraph_t *g = agopen("undirected_graph", Agdirected, 0);
+
+        // Create vertices
+        std::vector<Agnode_t*> nodes;
+        for (size_t i = 0; i < Nodes.size(); ++i) {
+            Agnode_t *node = agnode(g, const_cast<char *>(std::string(std::to_string(i)).c_str()), 1);
+            nodes.push_back(node);
+        }
+
+        // Create edges
+        for (size_t i = 0; i < Nodes.size(); ++i) {
+            for (size_t j = 0; j < Nodes[i].size(); ++j) {
+            const node& n1 = i;
+            const node& n2 = Nodes[i][j];
+            Agedge_t *e = agedge(g, nodes[i], nodes[j], NULL, 1);
+            //agset(e, "label", "edge", ""); // Set edge label (optional)
+            }
+        }
+
+        // Generate the DOT file
+        std::string dotFilename = "graph.dot";
+        FILE *dotFile = fopen(dotFilename.c_str(), "w");
+        agwrite(g, dotFile);
+        fclose(dotFile);
+
+        // Render the graph using Graphviz's layout engine
+        std::string command = "dot -Tpng " + dotFilename + " -o graph.png";
+        system(command.c_str());
     }
 
 };
@@ -716,6 +795,50 @@ class MNet{
     void unlink(const node i, const node j) {
         Nodes[i].erase(j);
         Nodes[j].erase(i);
+    }
+    MNet get_giant_component() {
+        if (Nodes.empty()) {
+            return MNet();
+        }
+
+        std::vector<bool> visited(Nodes.size(), false);
+        std::vector<node> best, recorded;
+
+        node count = 0;
+
+        node current;
+        std::stack<node> dfs_stack;
+        for (node i = 0; i < Nodes.size(); ++i) {
+            if (visited[i]) continue;
+            recorded.clear();
+            dfs_stack.push(i);
+
+            while (!dfs_stack.empty()) {
+                current = dfs_stack.top();
+                dfs_stack.pop();
+
+                if (!visited[current]) {
+                    visited[current] = true;
+                    recorded.push_back(current);
+
+                    for (const node& neighbor : Nodes[current]) {
+                        if (!visited[neighbor]) {
+                            dfs_stack.push(neighbor);
+                        }
+                    }
+                }
+            }
+            count += recorded.size();
+            if (recorded.size() > best.size()) best = recorded;
+            if (best.size() >= (Nodes.size()-count)) break;
+        }
+
+        std::vector<std::unordered_set<node>> giant_component;
+        for (const node& i : best) {
+            giant_component.push_back(Nodes[i]);
+        }
+
+        return MNet(giant_component);
     }
     void print() {
         for (size_t i = 0; i < Nodes.size(); i++) {

@@ -2,9 +2,8 @@
 #include <chrono>
 
 int main(){
-    CNet Watts1 = CNet::WattsStrogatz(100000, 1000, 0.5);
-    Watts1.plot_degree_distribution("qt",true);
-    
+    CNet ring = CNet::ring(30, 2);
+    ring.plot();
 
     return 0;
 }
